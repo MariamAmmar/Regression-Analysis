@@ -1,0 +1,386 @@
+---
+title: "Homework 5 Peer Assessment"
+output:
+  pdf_document: default
+  html_document: default
+date: "Spring Semester 2022"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+options(tinytex.verbose = TRUE)
+```
+
+
+
+## Background
+
+Selected molecular descriptors from the Dragon chemoinformatics application were used to predict bioconcentration factors for 779 chemicals in order to evaluate QSAR (Quantitative Structure Activity Relationship).  This dataset was obtained from the UCI machine learning repository.
+
+The dataset consists of 779 observations of 10 attributes. Below is a brief description of each feature and the response variable (logBCF) in our dataset:
+
+1. *nHM* - number of heavy atoms (integer)
+2. *piPC09* - molecular multiple path count (numeric)
+3. *PCD* - difference between multiple path count and path count (numeric)
+4. *X2Av* - average valence connectivity (numeric)
+5. *MLOGP* - Moriguchi octanol-water partition coefficient (numeric)
+6. *ON1V* -  overall modified Zagreb index by valence vertex degrees (numeric)
+7. *N.072* - Frequency of RCO-N< / >N-X=X fragments (integer)
+8. *B02[C-N]* - Presence/Absence of C-N atom pairs (binary)
+9. *F04[C-O]* - Frequency of C-O atom pairs (integer)
+10. *logBCF* - Bioconcentration Factor in log units (numeric)
+
+Note that all predictors with the exception of B02[C-N] are quantitative.  For the purpose of this assignment, DO NOT CONVERT B02[C-N] to factor.  Leave the data in its original format - numeric in R.
+
+Please load the dataset "Bio_pred" and then split the dataset into a train and test set in a 80:20 ratio. Use the training set to build the models in Questions 1-6. Use the test set to help evaluate model performance in Question 7. Please make sure that you are using R version 3.6.X or above (i.e. version 4.X is also acceptable).
+
+## Read Data
+
+```{r, message=F, warning=F}
+# Clear variables in memory
+rm(list=ls())
+
+# Import the libraries
+#install.packages("CombMSC")
+#library(CombMSC)
+library(boot)
+library(leaps)
+library(MASS)
+library(glmnet)
+
+# Ensure that the sampling type is correct
+RNGkind(sample.kind="Rejection")
+
+# Set a seed for reproducibility
+set.seed(100)
+
+# Read data
+fullData = read.csv("Bio_pred.csv",header=TRUE)
+#fullData$B02.C.N. = as.factor(fullData$B02.C.N.)
+
+# Split data for traIning and testing
+testRows = sample(nrow(fullData),0.2*nrow(fullData))
+testData = fullData[testRows, ]
+trainData = fullData[-testRows, ]
+
+head(trainData)
+```
+Note: Use the training set to build the models in Questions 1-6. Use the test set to help evaluate model performance in Question 7.
+
+## Question 1: Full Model
+
+(a) Fit a multiple linear regression with the variable *logBCF* as the response and the other variables as predictors. Call it *model1*. Display the model summary.
+
+**ANSWER:**
+
+```{r}
+
+model1 = lm(logBCF ~ ., data = trainData)
+summary(model1)
+
+```
+
+
+(b) Which regression coefficients are significant at the 95% confidence level? At the 99% confidence level?
+
+**ANSWER:**
+
+Regression coeffficients significant at the 95% confidence level:
+-nHM (0.137022)
+-MLOGP (0.506088)
+-ON1V (0.140595)
+-B02.C.N.1 (-0.158231)
+-F04.C.O.(-0.030763)
+
+Regression coeffficients significant at the 99% confidence level:
+-nHM (0.137022)
+-MLOGP (0.506088)
+-F04.C.O.(-0.030763)
+
+
+(c) What are the Mallow's Cp, AIC, and BIC criterion values for this model?
+
+**ANSWER:**
+
+```{r, message=F, warning=F}
+library(leaps)
+
+set.seed(100)
+
+n = nrow(trainData)
+p = 9
+RSS = sum(resid(model1)^2)
+S2 = (sqrt(deviance(model1)/df.residual(model1)))^2
+
+
+  
+cp = RSS/S2 - n + 2*(p+1)
+
+sprintf("CP: %s", round(cp,2))
+sprintf("AIC: %s", round(AIC(model1),2))
+sprintf("BIC: %s", round(BIC(model1),2))
+
+```
+
+
+(d) Build a new model on the training data with only the variables which coefficients were found to be statistically significant at the 99% confident level. Call it *model2*. Perform a Partial F-test to compare this new model with the full model (*model1*). Which one would you prefer? Is it good practice to select variables based on statistical significance of individual coefficients? Explain.
+
+**ANSWER:**
+
+```{r}
+set.seed(100)
+
+model2 = lm(logBCF ~ nHM + MLOGP + F04.C.O., data = trainData)
+
+summary(model2)
+
+anova(model1, model2)
+
+```
+
+**ANSWER:**
+Based on the p-value for this partial f-test, we would reject the null hypothesis that all of the coefficients for the predictors in model 2 are 0 and note that at least one predictor has explanatory power holding all else constant. But, whether or not we should include all predictors can be determined via variable selection. 
+
+Is it *NOT* a good idea to only include variables that are statistically significant and exclude all those that are not because the coefficients and statistical significant depend on all other variables/factors in the model held constant. Removing or adding predictors can make predictors that were initially significant to become insignificant and vice versa. For example, in this case, all three predictors included in model2 were significant at the 99% significance level in model1 holding all other variables constant, but only two of these same variables are also significant in model2. 
+
+
+
+## Question 2: Full Model Search
+
+(a) Compare all possible models using Mallow's Cp. How many models can be constructed using subsets/combinations drawn from the full set of variables? Display a table indicating the variables included in the best model of each size and the corresponding Mallow's Cp value.
+
+Hint: You can use nbest parameter. 
+
+**ANSWER:**
+
+```{r, message=F, warning=F}
+set.seed(100)
+
+#y<-scale(trainData$logBCF)
+#x<- scale(trainData[1:9])
+#trainData
+
+#cp_values <- summary(regsubsets(logBCF ~ ., data = trainData))
+library(lars)
+library(leaps)
+
+trainData2 = trainData
+
+trainData2[, colnames(trainData)[colnames(trainData) != 'B02.C.N.']] = scale(trainData2[, colnames(trainData2)[colnames(trainData2) != 'B02.C.N.']])
+
+cp_values <- summary(regsubsets(logBCF ~ ., data = trainData2, nbest = 1))
+
+x = as.matrix(trainData[1:9])
+y = trainData$logBCF
+  
+#x_scaled<- as.matrix(trainData2[1:9])
+#y_scalled<- trainData2$logBCF
+
+# Extract the best model for each number of predictors
+#object = lars(x=x, y=y)
+#object
+#round(object$Cp,2)
+
+#x<-scale(trainData[,-1])
+#p = colnames(trainData)[1:9]
+#predictors = cbind(colnames(trainData)[1:9])
+out = leaps(x, y, method = "Cp") 
+cbind(as.matrix(out$which),out$Cp)
+
+best.model = which(out$Cp==min(out$Cp)) 
+cbind(as.matrix(out$which), out$Cp)[best.model,]
+
+head(x)
+```
+**ANSWER:**
+The number of models can be constructed using subsets/combinations drawn from the full set of variables is 2 to the power of p. In this case since the number of predictors is 9, this value is 512. The best model with the lowest CP value of 6.116174 excludes the variables PCD, X2Av, and N.072. 
+
+(b) How many variables are in the model with the lowest Mallow's Cp value? Which variables are they? Fit this model and call it *model3*. Display the model summary.
+
+**ANSWER:**
+There are 6 variables in the model with the lowest Mallow's Cp value which are nHM, piPC09, MLOGP, ON1V, B02.C.N., and F04.C.O.
+
+```{r}
+set.seed(100)
+
+model3 = lm(logBCF ~ nHM + piPC09 + MLOGP + ON1V + B02.C.N. + F04.C.O., data = trainData)
+summary(model3)
+
+```
+
+## Question 3: Stepwise Regression
+
+(a) Perform backward stepwise regression using BIC. Allow the minimum model to be the model with only an intercept, and the full model to be *model1*. Display the model summary of your final model. Call it *model4*
+
+**ANSWER:**
+
+```{r}
+set.seed(100)
+
+
+```
+
+
+(b) How many variables are in *model4*? Which regression coefficients are significant at the 99% confidence level?
+
+**ANSWER:**
+
+
+(c) Perform forward stepwise selection with AIC. Allow the minimum model to be the model with only an intercept, and the full model to be *model1*. Display the model summary of your final model. Call it *model5*. Do the variables included in *model5* differ from the variables in *model4*? 
+
+**ANSWER:**
+
+```{r}
+set.seed(100)
+
+
+```
+
+
+(d) Compare the adjusted $R^2$, Mallow's Cp, AICs and BICs of the full model (*model1*), the model found in Question 2 (*model3*), and the model found using backward selection with BIC (*model4*). Which model is preferred based on these criteria and why?
+
+**ANSWER:**
+
+```{r}
+set.seed(100)
+
+
+```
+
+
+## Question 4: Ridge Regression
+
+(a) Perform ridge regression on the training set. Use cv.glmnet() to find the lambda value that minimizes the cross-validation error using 10 fold CV.
+
+**ANSWER:**
+
+```{r}
+set.seed(100)
+
+
+```
+
+
+(b) List the value of coefficients at the optimum lambda value.
+
+**ANSWER:**
+
+```{r}
+set.seed(100)
+
+
+```
+
+
+(c) How many variables were selected? Was this result expected? Explain.
+
+**ANSWER:**
+
+
+## Question 5: Lasso Regression
+
+
+(a) Perform lasso regression on the training set.Use cv.glmnet() to find the lambda value that minimizes the cross-validation error using 10 fold CV.
+
+**ANSWER:**
+
+```{r, message=F, warning=F}
+set.seed(100)
+
+
+
+
+
+```
+
+(b) Plot the regression coefficient path.
+
+**ANSWER:**
+
+```{r}
+set.seed(100)
+
+
+```
+
+
+(c) How many variables were selected? Which are they?
+
+**ANSWER:**
+
+```{r}
+set.seed(100)
+
+
+
+```
+
+
+
+## Question 6: Elastic Net
+
+(a) Perform elastic net regression on the training set. Use cv.glmnet() to find the lambda value that minimizes the cross-validation error using 10 fold CV. Give equal weight to both penalties.
+
+**ANSWER:**
+
+```{r}
+set.seed(100)
+
+
+```
+
+
+(b) List the coefficient values at the optimal lambda. How many variables were selected? How do these variables compare to those from Lasso in Question 5?
+
+**ANSWER:**
+
+```{r}
+set.seed(100)
+
+
+```
+
+
+## Question 7: Model comparison
+
+(a) Predict *logBCF* for each of the rows in the test data using the full model, and the models found using backward stepwise regression with BIC, ridge regression, lasso regression, and elastic net. Display the first few predictions for each model.
+
+**ANSWER:**
+
+```{r}
+set.seed(100)
+
+
+```
+
+
+
+(b) Compare the predictions using mean squared prediction error. Which model performed the best?
+
+**ANSWER:**
+
+```{r}
+set.seed(100)
+
+
+```
+
+
+(c) Provide a table listing each method described in Question 7a and the variables selected by each method (see Lesson 5.8 for an example). Which variables were selected consistently?
+
+**ANSWER:**
+
+
+
+|        | Backward Stepwise | Ridge | Lasso  | Elastic Net |
+|--------|-------------|-------------------|--------|-------|
+|nHM     |             |                   |        |       |          
+|piPC09  |             |                   |        |       | 
+|PCD     |             |                   |        |       |        
+|X2AV    |             |                   |        |       | 
+|MLOGP   |             |                   |        |       | 
+|ON1V    |             |                   |        |       | 
+|N.072   |             |                   |        |       | 
+|B02.C.N.|             |                   |        |       |
+|F04.C.O.|             |                   |        |       | 
+
